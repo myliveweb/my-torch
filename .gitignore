@@ -11,6 +11,3 @@ wheels/
 
 # Environment variables
 .env
-
-# ChromaDB
-shop_chroma_db/

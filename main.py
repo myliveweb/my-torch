@@ -3,6 +3,10 @@ import re
 import string
 import time
 from typing import Any, Dict, List, Literal, Optional
+
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_ollama import ChatOllama
 import torch
@@ -63,35 +67,58 @@ class ChatWithAI:
             embedding_function=self.embeddings,
             collection_name=os.getenv("CHROMA_COLLECTION_NAME"),
         )
+        
+        self.retriever = self.chroma_db.as_retriever(
+            search_type="similarity",
+            search_kwargs={"k": 5}
+        )
 
-    def get_relevant_context(self, query: str, k: int = 3) -> List[Dict[str, Any]]:
+    def ask(self, query: str) -> str:
         """
-        Выполняет семантический поиск по векторной базе данных ChromaDB для нахождения
-        наиболее релевантных документов по запросу.
-
-        Args:
-            query (str): Текст запроса для поиска релевантного контекста.
-            k (int): Максимальное количество возвращаемых документов. По умолчанию 3.
-
-        Returns:
-            List[Dict[str, Any]]:
-                Список словарей, где каждый словарь представляет релевантный документ
-                и содержит его текст и метаданные.
+        Выполняет полный RAG-пайплайн: извлекает контекст, форматирует промпт и генерирует ответ.
         """
-        try:
-            results = self.chroma_db.similarity_search(
-                self.normalize_query(query), k=k
-            )
-            return [
-                {
-                    "text": doc.page_content,
-                    "metadata": doc.metadata,
-                }
-                for doc in results
-            ]
-        except Exception as e:
-            logger.error(f"Ошибка при получении контекста: {e}")
-            return []
+        
+        # Нормализуем запрос перед использованием
+        normalized_query = self.normalize_query(query)
+
+        # Создаем шаблон промпта
+        template = """
+        Вы — ассистент для ответов на вопросы. Используйте следующие фрагменты контекста, 
+        чтобы ответить на вопрос. Если вы не знаете ответа, просто скажите, что не знаете.
+        Отвечайте кратко и по делу.
+
+        Контекст:
+        {context}
+
+        Вопрос:
+        {question}
+
+        Ответ:
+        """
+        prompt = ChatPromptTemplate.from_template(template)
+
+        # Форматируем документы для передачи в LLM
+        def format_docs(docs):
+            return "\n\n".join(doc.page_content for doc in docs)
+
+        # Создаем RAG-цепочку
+        rag_chain = (
+            {"context": self.retriever | format_docs, "question": RunnablePassthrough()}
+            | prompt
+            | self.llm
+            | StrOutputParser()
+        )
+
+        logger.info("Выполнение RAG-цепочки...")
+        start_rag_time = time.time()
+        
+        # Запускаем цепочку с нормализованным запросом
+        result = rag_chain.invoke(normalized_query)
+        
+        end_rag_time = time.time()
+        logger.success(f"RAG-цепочка выполнена за {end_rag_time - start_rag_time:.2f} сек")
+        
+        return result
 
     @staticmethod
     def normalize_query(text: str) -> str:
@@ -121,15 +148,28 @@ class ChatWithAI:
 
 def main():
     """
-    Основная функция для демонстрации работы ChatWithAI.
-    В данный момент содержит закомментированный пример использования.
+    Основная функция для интерактивного общения с ChatWithAI.
+    Создает цикл, в котором пользователь может задавать вопросы.
     """
-    logger.success("Старт")
+    logger.success("Запуск интерактивного чат-бота...")
+    chat_bot = ChatWithAI(provider="qwen")
+    logger.info("Чат-бот готов. Введите ваш вопрос. Для выхода введите 'exit' или 'quit'.")
 
-    # Пример использования:
-    # chat_bot = ChatWithAI(provider="qwen")
-    # context = chat_bot.get_relevant_context("ваш вопрос")
-    # print(context)
+    while True:
+        question = input("\nВаш вопрос: ")
+        if question.lower() in ["exit", "quit"]:
+            print("Завершение работы.")
+            break
+        
+        if not question.strip():
+            continue
+
+        answer = chat_bot.ask(question)
+        
+        print("\n" + "="*50)
+        print(f"Ответ: {answer}")
+        print("="*50)
+
 
 if __name__ == "__main__":
     main()
