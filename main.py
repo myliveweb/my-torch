@@ -131,6 +131,5 @@ def main():
     # context = chat_bot.get_relevant_context("ваш вопрос")
     # print(context)
 
-
 if __name__ == "__main__":
     main()
